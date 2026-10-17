@@ -7,10 +7,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1",
+
+api_key = os.getenv("OPENROUTER_API_KEY")
+client = (
+    OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+    )
+    if api_key
+    else None
 )
+
 
 SEVERITY_SCORES = {
     21:  {"score": 9, "level": "CRITICAL", "name": "FTP"},
@@ -236,6 +243,7 @@ def get_affected_devices(packets: list) -> list:
 
     return sorted(devices.values(), key=lambda x: x["violation_count"], reverse=True)
 
+
 def analyze_packets_for_threats(packets: list) -> str:
     if not packets:
         return "No packets to analyze."
@@ -245,6 +253,17 @@ def analyze_packets_for_threats(packets: list) -> str:
     total_violations = len(violations)
     severity = calculate_severity(packets)
     patterns = analyze_traffic_patterns(packets)
+
+    # Preserve the threat summary when no cloud API key is configured.
+    # Detailed finding explanations are handled separately by local Ollama.
+    if client is None:
+        return (
+            f"Threat level: {severity['level']}\n"
+            f"Total packets: {total}\n"
+            f"PCI-DSS violations: {total_violations}\n"
+            f"Highest severity score: {severity['overall_score']}/10\n"
+            "Cloud AI analysis unavailable: OPENROUTER_API_KEY is not set."
+        )
 
     packet_summary = json.dumps(violations[:20], indent=2)
 
@@ -279,7 +298,7 @@ Be specific, technical, and professional. Reference exact PCI-DSS v4.0 requireme
         messages=[
             {
                 "role": "system",
-                "content": "You are a certified PCI-DSS v4.0 QSA (Qualified Security Assessor) specializing in retail network security. Provide precise, actionable, professional analysis suitable for a compliance report."
+                "content": "You are a PCI-DSS v4.0 QSA specializing in retail network security. Provide precise, actionable, professional analysis suitable for a compliance report."
             },
             {
                 "role": "user",
@@ -291,6 +310,7 @@ Be specific, technical, and professional. Reference exact PCI-DSS v4.0 requireme
     )
 
     return response.choices[0].message.content
+
 
 def get_threat_summary(packets: list) -> dict:
     if not packets:

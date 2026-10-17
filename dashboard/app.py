@@ -19,6 +19,7 @@ load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from analyzer.threat_engine import get_threat_summary
+from maxguard.ai.ollama_client import AIUnavailable, explain_all
 
 IS_CLOUD = os.getenv("STREAMLIT_CLOUD", "false").lower() == "true"
 
@@ -487,10 +488,24 @@ def render_violations_table(packets):
     if not violations_df.empty:
         st.markdown('<div class="section-header"><h3>PCI-DSS Violations Detected</h3></div>',
                     unsafe_allow_html=True)
+
+        display_columns = [
+            "timestamp",
+            "src_ip",
+            "dst_ip",
+            "protocol",
+            "dst_port",
+            "violation_detail",
+        ]
+
+        if "explanation" in violations_df.columns:
+            display_columns.append("explanation")
+
         st.dataframe(
-            violations_df[["timestamp", "src_ip", "dst_ip", "protocol", "dst_port", "violation_detail"]],
-            use_container_width=True
+            violations_df[display_columns],
+            use_container_width=True,
         )
+
     else:
         st.success("No PCI-DSS violations detected in this scan.")
 
@@ -762,6 +777,65 @@ def display_results(packets):
 
     with st.spinner("Running AI threat analysis..."):
         result = get_threat_summary(packets)
+
+    # Generate local AI explanations only for packets flagged as PCI-DSS violations.
+    # Convert each packet into the finding format expected by the Ollama client.
+    violations = [p for p in packets if p.get("pci_violation")]
+
+    if violations:
+        findings = []
+
+        for packet in violations:
+            violation_type = (
+                packet.get("violation_detail")
+                or "Unknown PCI-DSS violation"
+            )
+
+            # Only map a control when the existing finding identifies it.
+            controls = []
+            if "PCI DSS 4.2.1" in violation_type:
+                controls.append({
+                    "framework": "PCI-DSS",
+                    "control_id": "4.2.1",
+                })
+
+            findings.append({
+                "rule_id": violation_type,
+                "title": violation_type,
+                "protocol": packet.get("protocol") or "Unknown",
+                "dst_port": (
+                    packet.get("dst_port")
+                    or packet.get("src_port")
+                    or "Unknown"
+                ),
+                "details": (
+                    f"{violation_type}. "
+                    f"Source IP: {packet.get('src_ip') or 'Unknown'}. "
+                    f"Destination IP: {packet.get('dst_ip') or 'Unknown'}."
+                ),
+                "controls": controls,
+            })
+
+        # If local Ollama is unavailable, preserve the scan results and
+        # use a fallback message instead of stopping the dashboard.
+        try:
+            with st.spinner("Generating local AI explanations..."):
+                explain_all(findings)
+
+        except AIUnavailable:
+            st.warning(
+                "Local AI is unavailable. "
+                "Reports will still be generated without AI explanations."
+            )
+            for finding in findings:
+                finding["explanation"] = "Local AI unavailable"
+
+        # Attach each generated explanation to its original packet so the
+	# violations table and exported results can display it.
+        for packet, finding in zip(violations, findings):
+            packet["explanation"] = finding["explanation"]
+
+
 
     render_overview_metrics(packets, result)
     st.divider()
